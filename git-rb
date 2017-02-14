@@ -8,10 +8,11 @@ git rb [options]
 --
  Available options are
 v,verbose!         print more information
+dry-run!           only simulate, don't actually rebase
  Actions:
 continue!          continue
 abort!             abort
-skip!              do `git rebase --skip` and continue
+skip!              do \`git rebase --skip\` and continue
 "
 
 . git-sh-setup
@@ -25,6 +26,7 @@ state_dir="$GIT_DIR"/rebase-many
 #
 
 action=
+dry_run=
 verbose=
 
 total_argc=$#
@@ -34,6 +36,9 @@ do
 	--continue|--abort|--skip)
 		test $total_argc -eq 2 || usage
 		action=${1#--}
+		;;
+	--dry-run)
+		dry_run=t
 		;;
 	--verbose)
 		verbose=t
@@ -73,6 +78,16 @@ fi
 # Basic helpers
 #
 
+verbose () {
+	case "$verbose" in
+	'')
+		;;
+	*)
+		"$@"
+		;;
+	esac
+}
+
 output () {
 	case "$verbose" in
 	'')
@@ -91,15 +106,70 @@ output () {
 # Main work
 #
 
+get_upstream () {
+	git rev-parse --abbrev-ref "$1"@{u}
+}
+
 list_child_branches () {
-	branch="$1"
+	local branch="$1"
 	git config --name-only --get-regexp 'branch\..*\.merge' refs/heads/"$branch" \
 		| sed 's/^branch\.\(.*\)\.merge/\1/'
 	# XXX Really to get this logic right, I should also check that branch.$child.remote is '.' ...
 	# which rapidly makes it sad to be writing in shell.
 }
 
+is_atop () {
+	local upstream="$1"
+	local branch="$2"
+	test "$upstream" = "$(git merge-base "$upstream" "$branch")"
+}
+
+rebase_one () {
+	local upstream="$1"
+	local branch="$2"
+
+	# TODO handle continue/etc
+	if test -z "$dry_run"
+	then
+		verbose echo "Rebasing: $upstream <- $branch"
+		git rebase "$upstream" "$branch"
+	else
+		echo "Rebasing: $upstream <- $branch"
+	fi
+}
+
+# Pre: All descendants of $branch are on their upstreams.
+# Post: $branch and all its descendants are on their upstreams.
+rebase_many_simple () {
+	local upstream="$1"
+	local branch="$2"
+
+	verbose echo "Simple: ($upstream) $branch"
+
+	rebase_one "$upstream" "$branch"
+
+	for child in $(list_child_branches "$branch")
+	do
+		rebase_many_simple "$branch" "$child"
+	done
+}
+
+# Post: $branch and all its descendants are on their upstreams.
 rebase_many_full () {
+	local upstream="$1"
+	local branch="$2"
+
+	verbose echo "Full: ($upstream) $branch"
+
+	for child in $(list_child_branches "$branch")
+	do
+		rebase_many_full "$branch" "$child"
+	done
+
+	if ! is_atop "$upstream" "$branch"
+	then
+		rebase_many_simple "$upstream" "$branch"
+	fi
 }
 
 #
@@ -124,8 +194,26 @@ esac
 
 require_clean_work_tree "rebase-many" "$(gettext "Please commit or stash them.")"
 
+head_ref=$(git symbolic-ref -q HEAD)
+if test -z "$head_ref"
+then
+	die "\
+You are on a detached HEAD.
+Check out the branch you want to rebase."
+fi
+branch=${head_ref#refs/heads/}
+if test "$branch" = "$head_ref"
+then
+	die "\
+HEAD is not under refs/heads/: $head_ref
 
-	
+The 'upstream' feature of Git only operates on refs/heads/.
+"
+fi
+
+rebase_many_full "$(get_upstream "$branch")" "$branch"
+
+git checkout --quiet "$branch"
 
 # These follow the style in Git upstream.
 #
