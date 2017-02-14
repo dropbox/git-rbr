@@ -1,0 +1,138 @@
+#!/bin/sh
+
+SUBDIRECTORY_OK=Yes
+OPTIONS_KEEPDASHDASH=
+OPTIONS_STUCKLONG=t
+OPTIONS_SPEC="\
+git rb [options]
+--
+ Available options are
+v,verbose!         print more information
+ Actions:
+continue!          continue
+abort!             abort
+skip!              do `git rebase --skip` and continue
+"
+
+. git-sh-setup
+require_work_tree_exists
+cd_to_toplevel
+
+state_dir="$GIT_DIR"/rebase-many
+
+#
+# Parse args
+#
+
+action=
+verbose=
+
+total_argc=$#
+while test $# != 0
+do
+	case "$1" in
+	--continue|--abort|--skip)
+		test $total_argc -eq 2 || usage
+		action=${1#--}
+		;;
+	--verbose)
+		verbose=t
+		GIT_QUIET=
+		;;
+	--)
+		shift
+		break
+		;;
+	esac
+	shift
+done
+test $# -le 0 || usage
+
+in_progress=
+if test -d "$state_dir"
+then
+	in_progress=t
+fi
+
+# TODO detect non-many rebase too
+
+if test -n "$action" && test -z "$in_progress"
+then
+	die "No rebase-many in progress?"
+fi
+
+if test -z "$action" && test -n "$in_progress"
+then
+	die "\
+Rebase-many in progress; try abort/continue, or wipe the state dir.
+
+TODO better message."
+fi
+
+#
+# Basic helpers
+#
+
+output () {
+	case "$verbose" in
+	'')
+		output=$("$@" 2>&1 )
+		status=$?
+		test $status != 0 && printf "%s\n" "$output"
+		return $status
+		;;
+	*)
+		"$@"
+		;;
+	esac
+}
+
+#
+# Main work
+#
+
+list_child_branches () {
+	branch="$1"
+	git config --name-only --get-regexp 'branch\..*\.merge' refs/heads/"$branch" \
+		| sed 's/^branch\.\(.*\)\.merge/\1/'
+	# XXX Really to get this logic right, I should also check that branch.$child.remote is '.' ...
+	# which rapidly makes it sad to be writing in shell.
+}
+
+rebase_many_full () {
+}
+
+#
+# Handle in-progress rebase, and abort/continue/etc
+#
+
+case "$action" in
+continue)
+	die "TODO implement"
+	;;
+skip)
+	die "TODO implement"
+	;;
+abort)
+	die "TODO implement"
+	;;
+esac
+
+#
+# Handle 
+#
+
+require_clean_work_tree "rebase-many" "$(gettext "Please commit or stash them.")"
+
+
+	
+
+# These follow the style in Git upstream.
+#
+# Local Variables:
+# sh-indentation: 8
+# sh-basic-offset: 8
+# sh-indent-for-case-label: 0
+# sh-indent-for-case-alt: +
+# indent-tabs-mode: t
+# End:
