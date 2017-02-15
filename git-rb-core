@@ -72,12 +72,56 @@ def is_atop(upstream, branch):
 # a rebase hits a conflict and the user re-enters here with --continue
 # etc.
 #
+# In the logical code above, the one line where we can exit and invite
+# the user to resume is the `git rebase` call.  So the stack we need
+# to represent on disk consists of frames
+#    full_0 full_1 ... full_n simple_0 ... simple_m
+# where the innermost frame simple_m is at the rebase; the innermost
+# rebase_many_full frame full_n is at the rebase_many_simple call; and the
+# other frames are each at the recursion inside their respective loops.
+#
+# Internally, it's convenient to overload the stack data structures
+# slightly to represent two variant forms of stack:
+#   1. at the top of the `rebase_many_simple` loop, and
+#   2. at the top of the `rebase_many_full` loop.
+# These don't appear in stacks stored on disk.
+#
 class RebaseManyMachine(object):
     state_dir = None  # type: str
+
     orig_branch = None  # type: str
     orig_upstream = None  # type: str
     verbose = False
     dry_run = False
+
+    # The logical stack (see above) is represented by current_rebase,
+    # stack_simple, and stack_full.  Three variants:
+    #
+    #   Variant 0: inside a rebase
+    #     current_rebase not None.
+    #     simple_m described by current_rebase, full_n omitted as a tail call.
+    #
+    #   Variant 1: top of `rebase_many_simple` loop.
+    #     current_rebase None, stack_simple nonempty.
+    #     simple_m included in stack_simple, full_n omitted as a tail call.
+    #
+    #   Variant 2: top of `rebase_many_full` loop.
+    #     current_rebase None, stack_simple empty.
+    #     full_n included in stack_full.
+
+    # For Variant 0, the inmost logical frame simple_m, consisting of
+    # upstream and branch for the current rebase; else None.
+    current_rebase = None  # type: Optional[Tuple[str, str]]
+
+    # The stack of logical frames full_0 ... full_(n-1) (or full_n),
+    # each with upstream, branch, and a list of remaining child
+    # branches.
+    stack_full = []  # type: List[Tuple[str, str, List[str]]]
+
+    # The stack of logical frames simple_0 ... simple_(m-1) (or
+    # simple_m), each with branch and a list of remaining child
+    # branches.
+    stack_simple = []  # type: List[Tuple[str, List[str]]]
 
     def __init__(self, git_dir):
         # type: (str) -> None
@@ -102,31 +146,83 @@ class RebaseManyMachine(object):
         if self.verbose:
             sys.stderr.write(message + '\n')
 
-    def rebase_one(self, upstream, branch):
-        # type: (str, str) -> None
-        self.v_out('Rebasing: %s <- %s' % (upstream, branch))
-        if not self.dry_run:
-            cmd_output(
-                ['git', 'rebase', upstream, branch])
+    def read_stack(self):
+        # type: (str) -> None
+        with file(self.state_filename('stack')) as f:
+            stack_data = json.load(f)
+        self.stack_full = stack_data['stack_full']
+        self.stack_simple = stack_data['stack_simple']
+        self.current_rebase = stack_data['current_rebase']
 
-    def rebase_many_simple(self, upstream, branch):
-        # type: (str, str) -> None
-        self.v_out('Simple: (%s) %s' % (upstream, branch))
-        self.rebase_one(upstream, branch)
-        for child in child_branches(branch):
-            self.rebase_many_simple(branch, child)
-
-    def rebase_many_full(self, upstream, branch):
-        # type: (str, str) -> None
-        self.v_out('Full: (%s) %s' % (upstream, branch))
-        for child in child_branches(branch):
-            self.rebase_many_full(branch, child)
-        if not is_atop(upstream, branch):
-            self.rebase_many_simple(upstream, branch)
+    def write_stack(self):
+        # type: () -> None
+        stack_data = {
+            'stack_full': self.stack_full,
+            'stack_simple': self.stack_simple,
+            'current_rebase': self.current_rebase,
+        }
+        with file(self.state_filename('stack'), 'w') as f:
+            json.dump(stack_data, f)
 
     def run(self):
         # type: () -> None
-        self.rebase_many_full(self.orig_upstream, self.orig_branch)
+        while True:
+            #self.v_out(repr(
+            #    (self.current_rebase, self.stack_simple, self.stack_full)))
+
+            if self.current_rebase is not None:
+                # Variant 0.  Top of a `simple` call, at the rebase.
+                upstream, branch = self.current_rebase
+
+                # Attempt rebase.
+                self.v_out('Rebasing: %s <- %s' % (upstream, branch))
+                if not self.dry_run:
+                    self.write_stack()
+                    cmd_output(
+                        ['git', 'rebase', upstream, branch])
+
+                # If we made it here, proceed to the loop.
+                self.current_rebase = None
+                self.stack_simple.append((branch, child_branches(branch)))
+
+            elif self.stack_simple:
+                # Variant 1.  Top of the `simple` loop.
+                branch, children = self.stack_simple[-1]
+                if children:
+                    # Loop in `rebase_many_simple` not done yet.  Recurse.
+                    child = children.pop()
+                    self.current_rebase = (branch, child)
+                else:
+                    # Loop in `rebase_many_simple` done; frame returns.
+                    self.stack_simple.pop()
+
+            elif self.stack_full:
+                # Variant 2.  Top of the `full` loop.
+                upstream, branch, children = self.stack_full[-1]
+                if children:
+                    # Loop not done yet.  Recurse.
+                    child = children.pop()
+                    self.stack_full.append((branch, child, child_branches(child)))
+                else:
+                    # Loop done.
+                    if not is_atop(upstream, branch):
+                        self.stack_full.pop()
+                        self.current_rebase = (upstream, branch)
+                    else:
+                        # Whole frame done.
+                        self.stack_full.pop()
+
+            else:
+                # Like Variant 2, but our whole outermost frame is done.
+                break
+
+    def init_stack(self):
+        # type: () -> None
+        # Stack variant 2.
+        self.current_rebase = None
+        self.stack_simple = []
+        self.stack_full = [
+            (self.orig_upstream, self.orig_branch, child_branches(self.orig_branch))]
 
     def happy_cleanup(self):
         # type: () -> None
@@ -135,7 +231,9 @@ class RebaseManyMachine(object):
 
     def start(self):
         # type: () -> None
+        self.init_stack()
         self.run()
+        self.happy_cleanup()
 
     def resume_continue(self):
         # type: () -> None
