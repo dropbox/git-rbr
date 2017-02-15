@@ -71,6 +71,34 @@ def one_rebase(upstream, branch):
         sys.exit(retcode)
 
 
+class Options(object):
+    state_dir = None  # type: str
+
+    verbose = False
+    dry_run = False
+
+    def __init__(self, git_dir):
+        # type: (str) -> None
+        self.state_dir = os.path.join(git_dir, 'rebase-many')
+
+        self.verbose = bool(self.read_state_file('verbose'))
+        self.dry_run = bool(self.read_state_file('dry-run'))
+
+    def state_filename(self, basename):
+        # type: (str) -> str
+        return os.path.join(self.state_dir, basename)
+
+    def read_state_file(self, name):
+        # type: (str) -> str
+        with file(self.state_filename(name)) as f:
+            return f.read().strip()
+
+    def v_out(self, message):
+        # type: (str) -> None
+        if self.verbose:
+            sys.stderr.write(message + '\n')
+
+
 # Logically what we're doing here is
 #
 #   rebase_many_simple () {
@@ -111,12 +139,10 @@ def one_rebase(upstream, branch):
 # These don't appear in stacks stored on disk.
 #
 class RebaseManyMachine(object):
-    state_dir = None  # type: str
+    opts = None  # type: Options
 
     orig_branch = None  # type: str
     orig_upstream = None  # type: str
-    verbose = False
-    dry_run = False
 
     # The logical stack (see above) is represented by current_rebase,
     # stack_simple, and stack_full.  Three variants:
@@ -147,32 +173,15 @@ class RebaseManyMachine(object):
     # branches.
     stack_simple = []  # type: List[Tuple[str, List[str]]]
 
-    def __init__(self, git_dir):
-        # type: (str) -> None
-        self.state_dir = os.path.join(git_dir, 'rebase-many')
-
-        self.orig_branch = self.read_state_file('branch')
-        self.orig_upstream = self.read_state_file('upstream')
-        self.verbose = bool(self.read_state_file('verbose'))
-        self.dry_run = bool(self.read_state_file('dry-run'))
-
-    def state_filename(self, basename):
-        # type: (str) -> str
-        return os.path.join(self.state_dir, basename)
-
-    def read_state_file(self, name):
-        # type: (str) -> str
-        with file(self.state_filename(name)) as f:
-            return f.read().strip()
-
-    def v_out(self, message):
-        # type: (str) -> None
-        if self.verbose:
-            sys.stderr.write(message + '\n')
+    def __init__(self, opts):
+        # type: (Options) -> None
+        self.opts = opts
+        self.orig_branch = self.opts.read_state_file('branch')
+        self.orig_upstream = self.opts.read_state_file('upstream')
 
     def read_stack(self):
         # type: (str) -> None
-        with file(self.state_filename('stack')) as f:
+        with file(self.opts.state_filename('stack')) as f:
             stack_data = json.load(f)
         self.stack_full = stack_data['stack_full']
         self.stack_simple = stack_data['stack_simple']
@@ -185,7 +194,7 @@ class RebaseManyMachine(object):
             'stack_simple': self.stack_simple,
             'current_rebase': self.current_rebase,
         }
-        with file(self.state_filename('stack'), 'w') as f:
+        with file(self.opts.state_filename('stack'), 'w') as f:
             json.dump(stack_data, f)
 
     def write_rebase_log(self, branch):
@@ -194,7 +203,7 @@ class RebaseManyMachine(object):
             ['git', 'rev-parse', '--symbolic-full-name', branch]).strip()
         current_commit_id = cmd_output(
             ['git', 'rev-parse', '--verify', branch]).strip()
-        with file(self.state_filename('rebase-log'), 'a') as f:
+        with file(self.opts.state_filename('rebase-log'), 'a') as f:
             f.write('%s %s\n' % (ref, current_commit_id))
 
     def return_to_original_branch(self):
@@ -204,10 +213,14 @@ class RebaseManyMachine(object):
 
     def reset_all(self):
         # type: () -> None
-        log = self.read_state_file('rebase-log')
+        try:
+            log = self.opts.read_state_file('rebase-log')
+        except IOError:
+            return
+
         for line in reversed(log.split('\n')):
             ref, commit_id = line.rsplit(' ', 1)
-            self.v_out('Resetting: %s %s' % (ref, commit_id))
+            self.opts.v_out('Resetting: %s %s' % (ref, commit_id))
             cmd_output(
                 ['git', 'update-ref', '-m', 'rebase-many: aborting', ref, commit_id])
         self.return_to_original_branch()
@@ -215,7 +228,7 @@ class RebaseManyMachine(object):
     def run(self):
         # type: () -> None
         while True:
-            #self.v_out(repr(
+            #self.opts.v_out(repr(
             #    (self.current_rebase, self.stack_simple, self.stack_full)))
 
             if self.current_rebase is not None:
@@ -223,8 +236,8 @@ class RebaseManyMachine(object):
                 upstream, branch = self.current_rebase
 
                 # Attempt rebase.
-                self.v_out('Rebasing: %s <- %s' % (upstream, branch))
-                if not self.dry_run:
+                self.opts.v_out('Rebasing: %s <- %s' % (upstream, branch))
+                if not self.opts.dry_run:
                     self.write_stack()
                     self.write_rebase_log(branch)
                     one_rebase(upstream, branch)
@@ -297,11 +310,18 @@ class RebaseManyMachine(object):
         self.stack_simple.append((branch, child_branches(branch)))
         self.run()
 
+    def abort_rebase(self):
+        '''Abort the actual `git rebase`, if we seem to be in one.'''
+        try:
+            self.read_stack()
+        except IOError:
+            return
+        if self.current_rebase:
+            cmd_output(['git', 'rebase', '--abort'])
+
     def abort(self):
         # type: () -> None
-        self.read_stack()
-        assert self.current_rebase
-        cmd_output(['git', 'rebase', '--abort'])
+        self.abort_rebase()
         self.reset_all()
 
 
@@ -310,7 +330,9 @@ def main():
         exit_usage()
     cmd = sys.argv[1]
 
-    machine = RebaseManyMachine(os.environ['GIT_DIR'])
+    opts = Options(os.environ['GIT_DIR'])
+
+    machine = RebaseManyMachine(opts)
     if cmd == 'init':
         machine.start()
     elif cmd in ('continue', 'skip'):

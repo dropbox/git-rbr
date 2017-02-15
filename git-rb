@@ -93,7 +93,7 @@ write_basic_state () {
 	echo "$dry_run" > "$state_dir"/dry-run
 }
 
-cleanup_basic_state () {
+cleanup_state () {
 	rm -rf "$state_dir"
 }
 
@@ -104,6 +104,7 @@ run_core () {
 	then
 		exit "$core_status"
 	fi
+	cleanup_state
 }
 
 #
@@ -113,17 +114,14 @@ run_core () {
 case "$action" in
 continue)
 	run_core continue
-	cleanup_basic_state
 	exit 0
 	;;
 skip)
 	run_core skip
-	cleanup_basic_state
 	exit 0
 	;;
 abort)
 	run_core abort
-	cleanup_basic_state
 	exit 0
 	;;
 esac
@@ -154,8 +152,6 @@ fi
 write_basic_state
 
 run_core init
-
-cleanup_basic_state
 
 
 # These follow the style in Git upstream.
