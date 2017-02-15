@@ -1,0 +1,172 @@
+#!/usr/bin/python
+
+import json
+import os
+import os.path
+import re
+import subprocess
+import sys
+
+
+def exit_usage():
+    sys.stderr.write('bad arguments: ' + ' '.join(sys.argv) + '\n')
+    sys.exit(2)
+
+
+def cmd_output(cmd):
+    try:
+        return subprocess.check_output(cmd, stderr=subprocess.STDOUT)
+    except subprocess.CalledProcessError as e:
+        print 'Error in command: %s' % (' '.join(cmd),)
+        sys.stdout.write(e.output)
+        sys.exit(e.returncode)
+
+
+def unchecked_output(cmd):
+    try:
+        return subprocess.check_output(cmd)
+    except subprocess.CalledProcessError as e:
+        return e.output
+
+
+def child_branches(branch):
+    # type: (str) -> List[str]
+    config_name_text = unchecked_output(
+        ['git', 'config', '--name-only',
+         '--get-regexp', r'branch\..*\.merge',
+         'refs/heads/%s' % (branch,)])
+    return re.findall('^branch\.(.*)\.merge$', config_name_text, re.M)
+
+
+def is_atop(upstream, branch):
+    # type: (str) -> bool
+    '''True just if `branch` is on top of `upstream`.'''
+    return '0' == cmd_output(
+        ['git', 'rev-list', '--count', '--max-count=1',
+         upstream, '--not', branch,
+         '--']).strip()
+
+
+# Logically what we're doing here is
+#
+#   rebase_many_simple () {
+#       git rebase "$1" "$2"
+#       for child in $(child_branches "$2"); do
+#           rebase_many_simple "$2" "$child"
+#       done
+#   }
+#
+#   rebase_many_full () {
+#       for child in $(child_branches "$2"); do
+#           rebase_many_full "$2" "$child"
+#       done
+#       if ! is_atop "$1" "$2"; then
+#           rebase_many_simple "$1" "$2"
+#       fi
+#   }
+#
+# It gets more complicated than that in order to support --continue
+# and friends.  Effectively we maintain the stack of recursive calls
+# to these two logical functions, but in "$state_dir" rather than just
+# in the running shell, so that we can pick it back up smoothly after
+# a rebase hits a conflict and the user re-enters here with --continue
+# etc.
+#
+class RebaseManyMachine(object):
+    state_dir = None  # type: str
+    orig_branch = None  # type: str
+    orig_upstream = None  # type: str
+    verbose = False
+    dry_run = False
+
+    def __init__(self, git_dir):
+        # type: (str) -> None
+        self.state_dir = os.path.join(git_dir, 'rebase-many')
+
+        self.orig_branch = self.read_state_file('branch')
+        self.orig_upstream = self.read_state_file('upstream')
+        self.verbose = bool(self.read_state_file('verbose'))
+        self.dry_run = bool(self.read_state_file('dry-run'))
+
+    def state_filename(self, basename):
+        # type: (str) -> str
+        return os.path.join(self.state_dir, basename)
+
+    def read_state_file(self, name):
+        # type: (str) -> str
+        with file(self.state_filename(name)) as f:
+            return f.read().strip()
+
+    def v_out(self, message):
+        # type: (str) -> None
+        if self.verbose:
+            sys.stderr.write(message + '\n')
+
+    def rebase_one(self, upstream, branch):
+        # type: (str, str) -> None
+        self.v_out('Rebasing: %s <- %s' % (upstream, branch))
+        if not self.dry_run:
+            cmd_output(
+                ['git', 'rebase', upstream, branch])
+
+    def rebase_many_simple(self, upstream, branch):
+        # type: (str, str) -> None
+        self.v_out('Simple: (%s) %s' % (upstream, branch))
+        self.rebase_one(upstream, branch)
+        for child in child_branches(branch):
+            self.rebase_many_simple(branch, child)
+
+    def rebase_many_full(self, upstream, branch):
+        # type: (str, str) -> None
+        self.v_out('Full: (%s) %s' % (upstream, branch))
+        for child in child_branches(branch):
+            self.rebase_many_full(branch, child)
+        if not is_atop(upstream, branch):
+            self.rebase_many_simple(upstream, branch)
+
+    def run(self):
+        # type: () -> None
+        self.rebase_many_full(self.orig_upstream, self.orig_branch)
+
+    def happy_cleanup(self):
+        # type: () -> None
+        cmd_output(
+            ['git', 'checkout', '--quiet', self.orig_branch])
+
+    def start(self):
+        # type: () -> None
+        self.run()
+
+    def resume_continue(self):
+        # type: () -> None
+        assert False, 'TODO implement'
+
+    def resume_skip():
+        # type: () -> None
+        assert False, 'TODO implement'
+
+    def resume_abort():
+        # type: () -> None
+        assert False, 'TODO implement'
+
+
+def main():
+    if len(sys.argv) != 2:
+        exit_usage()
+    cmd = sys.argv[1]
+
+    machine = RebaseManyMachine(os.environ['GIT_DIR'])
+    if cmd == 'init':
+        machine.start()
+    elif cmd == 'continue':
+        machine.resume_continue()
+    elif cmd == 'skip':
+        machine.resume_skip()
+    elif cmd == 'abort':
+        machine.resume_abort()
+    else:
+        exit_usage()
+
+
+if __name__ == '__main__':
+    main()

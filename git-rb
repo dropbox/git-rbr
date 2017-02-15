@@ -75,34 +75,6 @@ TODO better message."
 fi
 
 #
-# Basic helpers
-#
-
-verbose () {
-	case "$verbose" in
-	'')
-		;;
-	*)
-		"$@"
-		;;
-	esac
-}
-
-output () {
-	case "$verbose" in
-	'')
-		output=$("$@" 2>&1 )
-		status=$?
-		test $status != 0 && printf "%s\n" "$output"
-		return $status
-		;;
-	*)
-		"$@"
-		;;
-	esac
-}
-
-#
 # Main work
 #
 
@@ -110,65 +82,24 @@ get_upstream () {
 	git rev-parse --abbrev-ref "$1"@{u}
 }
 
-list_child_branches () {
-	local branch="$1"
-	git config --name-only --get-regexp 'branch\..*\.merge' refs/heads/"$branch" \
-		| sed 's/^branch\.\(.*\)\.merge/\1/'
-	# XXX Really to get this logic right, I should also check that branch.$child.remote is '.' ...
-	# which rapidly makes it sad to be writing in shell.
+write_basic_state () {
+	mkdir -p "$state_dir"
+	echo "$branch" > "$state_dir"/branch
+	echo "$(get_upstream "$branch")" > "$state_dir"/upstream
+	echo "$verbose" > "$state_dir"/verbose
+	echo "$dry_run" > "$state_dir"/dry-run
 }
 
-is_atop () {
-	local upstream="$1"
-	local branch="$2"
-	test "$upstream" = "$(git merge-base "$upstream" "$branch")"
+cleanup_basic_state () {
+	rm -rf "$state_dir"
 }
 
-rebase_one () {
-	local upstream="$1"
-	local branch="$2"
-
-	# TODO handle continue/etc
-	if test -z "$dry_run"
+run_core () {
+	GIT_DIR="$GIT_DIR" git rb-core "$1"
+	core_status=$?
+	if test "$core_status" -ne 0
 	then
-		verbose echo "Rebasing: $upstream <- $branch"
-		git rebase "$upstream" "$branch"
-	else
-		echo "Rebasing: $upstream <- $branch"
-	fi
-}
-
-# Pre: All descendants of $branch are on their upstreams.
-# Post: $branch and all its descendants are on their upstreams.
-rebase_many_simple () {
-	local upstream="$1"
-	local branch="$2"
-
-	verbose echo "Simple: ($upstream) $branch"
-
-	rebase_one "$upstream" "$branch"
-
-	for child in $(list_child_branches "$branch")
-	do
-		rebase_many_simple "$branch" "$child"
-	done
-}
-
-# Post: $branch and all its descendants are on their upstreams.
-rebase_many_full () {
-	local upstream="$1"
-	local branch="$2"
-
-	verbose echo "Full: ($upstream) $branch"
-
-	for child in $(list_child_branches "$branch")
-	do
-		rebase_many_full "$branch" "$child"
-	done
-
-	if ! is_atop "$upstream" "$branch"
-	then
-		rebase_many_simple "$upstream" "$branch"
+		exit "$core_status"
 	fi
 }
 
@@ -178,18 +109,21 @@ rebase_many_full () {
 
 case "$action" in
 continue)
-	die "TODO implement"
+	run_core continue
+	cleanup_basic_state
 	;;
 skip)
-	die "TODO implement"
+	run_core skip
+	cleanup_basic_state
 	;;
 abort)
-	die "TODO implement"
+	run_core abort
+	cleanup_basic_state
 	;;
 esac
 
 #
-# Handle 
+# Handle initial case
 #
 
 require_clean_work_tree "rebase-many" "$(gettext "Please commit or stash them.")"
@@ -211,9 +145,12 @@ The 'upstream' feature of Git only operates on refs/heads/.
 "
 fi
 
-rebase_many_full "$(get_upstream "$branch")" "$branch"
+write_basic_state
 
-git checkout --quiet "$branch"
+run_core init
+
+cleanup_basic_state
+
 
 # These follow the style in Git upstream.
 #
