@@ -114,14 +114,17 @@ case "$action" in
 continue)
 	run_core continue
 	cleanup_basic_state
+	exit 0
 	;;
 skip)
 	run_core skip
 	cleanup_basic_state
+	exit 0
 	;;
 abort)
 	run_core abort
 	cleanup_basic_state
+	exit 0
 	;;
 esac
 

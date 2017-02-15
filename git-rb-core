@@ -164,6 +164,30 @@ class RebaseManyMachine(object):
         with file(self.state_filename('stack'), 'w') as f:
             json.dump(stack_data, f)
 
+    def write_rebase_log(self, branch):
+        # type: (str) -> None
+        ref = cmd_output(
+            ['git', 'rev-parse', '--symbolic-full-name', branch]).strip()
+        current_commit_id = cmd_output(
+            ['git', 'rev-parse', '--verify', branch]).strip()
+        with file(self.state_filename('rebase-log'), 'a') as f:
+            f.write('%s %s\n' % (ref, current_commit_id))
+
+    def return_to_original_branch(self):
+        # type: () -> None
+        cmd_output(
+            ['git', 'checkout', '--quiet', self.orig_branch])
+
+    def reset_all(self):
+        # type: () -> None
+        log = self.read_state_file('rebase-log')
+        for line in reversed(log.split('\n')):
+            ref, commit_id = line.rsplit(' ', 1)
+            self.v_out('Resetting: %s %s' % (ref, commit_id))
+            cmd_output(
+                ['git', 'update-ref', '-m', 'rebase-many: aborting', ref, commit_id])
+        self.return_to_original_branch()
+
     def run(self):
         # type: () -> None
         while True:
@@ -178,6 +202,7 @@ class RebaseManyMachine(object):
                 self.v_out('Rebasing: %s <- %s' % (upstream, branch))
                 if not self.dry_run:
                     self.write_stack()
+                    self.write_rebase_log(branch)
                     cmd_output(
                         ['git', 'rebase', upstream, branch])
                     # TODO XXX: on error, fix error message
@@ -217,6 +242,8 @@ class RebaseManyMachine(object):
                 # Like Variant 2, but our whole outermost frame is done.
                 break
 
+        self.return_to_original_branch()
+
     def init_stack(self):
         # type: () -> None
         # Stack variant 2.
@@ -225,46 +252,35 @@ class RebaseManyMachine(object):
         self.stack_full = [
             (self.orig_upstream, self.orig_branch, child_branches(self.orig_branch))]
 
-    def happy_cleanup(self):
-        # type: () -> None
-        cmd_output(
-            ['git', 'checkout', '--quiet', self.orig_branch])
-
     def start(self):
         # type: () -> None
         self.init_stack()
         self.run()
-        self.happy_cleanup()
 
-    def resume_happy(self):
-        # type: () -> None
+    def resume(self, cmd):
+        # type: (str) -> None
+        assert cmd in ('continue', 'skip')
+
+        self.read_stack()
+        assert self.current_rebase  # TODO better error message
+        # Variant 0 stack.
+
+        # Resume the rebase.
+        cmd_output(['git', 'rebase', '--'+cmd])  # TODO handle errors here
+
+        # If that worked, proceed to the loop with a Variant 1 stack,
+        # just like in run().
         upstream, branch = self.current_rebase
         self.current_rebase = None
         self.stack_simple.append((branch, child_branches(branch)))
-
         self.run()
-        self.happy_cleanup()
 
-    def resume_continue(self):
-        # type: () -> None
-        self.read_stack()
-        assert self.current_rebase  # TODO better error message
-        cmd_output(['git', 'rebase', '--continue'])  # TODO handle errors here
-        self.resume_happy()
-
-    def resume_skip(self):
-        # type: () -> None
-        self.read_stack()
-        assert self.current_rebase  # TODO better error message
-        cmd_output(['git', 'rebase', '--skip'])  # TODO errors here
-        self.resume_happy()
-
-    def resume_abort(self):
+    def abort(self):
         # type: () -> None
         self.read_stack()
         assert self.current_rebase
         cmd_output(['git', 'rebase', '--abort'])
-        # TODO undo our own previous rebases
+        self.reset_all()
 
 
 def main():
@@ -275,12 +291,10 @@ def main():
     machine = RebaseManyMachine(os.environ['GIT_DIR'])
     if cmd == 'init':
         machine.start()
-    elif cmd == 'continue':
-        machine.resume_continue()
-    elif cmd == 'skip':
-        machine.resume_skip()
+    elif cmd in ('continue', 'skip'):
+        machine.resume(cmd)
     elif cmd == 'abort':
-        machine.resume_abort()
+        machine.abort()
     else:
         exit_usage()
 
