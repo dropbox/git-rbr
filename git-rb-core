@@ -47,6 +47,30 @@ def is_atop(upstream, branch):
          '--']).strip()
 
 
+def munge_resolve_message(text):
+    '''If the `git rebase` how-to-resolve message appears in `text`, correct it.'''
+    return re.sub(
+        '(?<=")git rebase(?= --(?:continue|skip|abort)")',
+        'git rb',
+        text)
+
+
+def one_rebase(upstream, branch):
+    # More complex than `cmd_output`, in order to munge the merge-conflict
+    # instructions.  Which go to stdout in a plain (`type=am`) or
+    # `type=merge` rebase, but to stderr in a `type=interactive` rebase,
+    # so cover both.
+    proc = subprocess.Popen(
+        ['git', 'rebase', upstream, branch],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    out, err = proc.communicate()
+    retcode = proc.poll()
+    if retcode:
+        sys.stdout.write(munge_resolve_message(out))
+        sys.stderr.write(munge_resolve_message(err))
+        sys.exit(retcode)
+
+
 # Logically what we're doing here is
 #
 #   rebase_many_simple () {
@@ -203,9 +227,7 @@ class RebaseManyMachine(object):
                 if not self.dry_run:
                     self.write_stack()
                     self.write_rebase_log(branch)
-                    cmd_output(
-                        ['git', 'rebase', upstream, branch])
-                    # TODO XXX: on error, fix error message
+                    one_rebase(upstream, branch)
 
                 # If we made it here, proceed to the loop.
                 self.current_rebase = None
