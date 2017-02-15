@@ -5,6 +5,9 @@ OPTIONS_KEEPDASHDASH=
 OPTIONS_STUCKLONG=t
 OPTIONS_SPEC="\
 git rb [options]
+git rb --continue | --abort | --skip
+
+Rebase this branch and all its dependents onto their respective upstreams.
 --
  Available options are
 v,verbose!         print more information

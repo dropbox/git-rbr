@@ -180,6 +180,7 @@ class RebaseManyMachine(object):
                     self.write_stack()
                     cmd_output(
                         ['git', 'rebase', upstream, branch])
+                    # TODO XXX: on error, fix error message
 
                 # If we made it here, proceed to the loop.
                 self.current_rebase = None
@@ -235,17 +236,35 @@ class RebaseManyMachine(object):
         self.run()
         self.happy_cleanup()
 
+    def resume_happy(self):
+        # type: () -> None
+        upstream, branch = self.current_rebase
+        self.current_rebase = None
+        self.stack_simple.append((branch, child_branches(branch)))
+
+        self.run()
+        self.happy_cleanup()
+
     def resume_continue(self):
         # type: () -> None
-        assert False, 'TODO implement'
+        self.read_stack()
+        assert self.current_rebase  # TODO better error message
+        cmd_output(['git', 'rebase', '--continue'])  # TODO handle errors here
+        self.resume_happy()
 
-    def resume_skip():
+    def resume_skip(self):
         # type: () -> None
-        assert False, 'TODO implement'
+        self.read_stack()
+        assert self.current_rebase  # TODO better error message
+        cmd_output(['git', 'rebase', '--skip'])  # TODO errors here
+        self.resume_happy()
 
-    def resume_abort():
+    def resume_abort(self):
         # type: () -> None
-        assert False, 'TODO implement'
+        self.read_stack()
+        assert self.current_rebase
+        cmd_output(['git', 'rebase', '--abort'])
+        # TODO undo our own previous rebases
 
 
 def main():
