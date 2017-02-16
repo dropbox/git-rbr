@@ -112,14 +112,18 @@ def munge_resolve_message(text):
         text)
 
 
-def one_rebase(upstream, branch):
-    # type: (str, str) -> None
+def git_rev_parse(commitish):
+    return cmd_output(['git', 'rev-parse', '--verify', commitish]).strip()
+
+
+def one_rebase(onto, upstream, branch):
+    # type: (str, str, str) -> None
     # More complex than `cmd_output`, in order to munge the merge-conflict
     # instructions.  Which go to stdout in a plain (`type=am`) or
     # `type=merge` rebase, but to stderr in a `type=interactive` rebase,
     # so cover both.
     proc = subprocess.Popen(
-        ['git', 'rebase', upstream, branch],
+        ['git', 'rebase', '--onto', onto, upstream, branch],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     out, err = proc.communicate()
     retcode = proc.poll()
@@ -131,21 +135,18 @@ def one_rebase(upstream, branch):
 
 # Logically what we're doing here is
 #
-#   rebase_many_simple () {
-#       git rebase "$1" "$2"
-#       for child in $(child_branches "$2"); do
-#           rebase_many_simple "$2" "$child"
-#       done
-#   }
+#   def rebase_many_simple(onto, upstream, branch):
+#       old_id = git_rev_parse(branch)
+#       git_rebase_onto(onto, upstream, branch)
+#       new_id = git_rev_parse(branch)
+#       for child in child_branches(branch):
+#           rebase_many_simple(new, old, child)
 #
-#   rebase_many_full () {
-#       for child in $(child_branches "$2"); do
-#           rebase_many_full "$2" "$child"
-#       done
-#       if ! is_atop "$1" "$2"; then
-#           rebase_many_simple "$1" "$2"
-#       fi
-#   }
+#   def rebase_many_full(onto, upstream, branch):
+#       for child in child_branches(branch):
+#           rebase_many_full(branch, branch, child)
+#       if not is_atop(upstream, branch) or onto != upstream:
+#           rebase_many_simple(onto, upstream, branch)
 #
 # It gets more complicated than that in order to support --continue
 # and friends.  Effectively we maintain the stack of recursive calls
@@ -188,18 +189,18 @@ class RebaseManyMachine(object):
     #     full_n included in stack_full.
 
     # For Variant 0, the inmost logical frame simple_m, consisting of
-    # upstream and branch for the current rebase; else None.
-    current_rebase = None  # type: Optional[Tuple[str, str]]
-
-    # The stack of logical frames full_0 ... full_(n-1) (or full_n),
-    # each with upstream, branch, and a list of remaining child
-    # branches.
-    stack_full = []  # type: List[Tuple[str, str, List[str]]]
+    # onto, upstream, and branch for the current rebase; else None.
+    current_rebase = None  # type: Optional[Tuple[str, str, str]]
 
     # The stack of logical frames simple_0 ... simple_(m-1) (or
-    # simple_m), each with branch and a list of remaining child
+    # simple_m), each with new_id, old_id, and a list of remaining child
     # branches.
-    stack_simple = []  # type: List[Tuple[str, List[str]]]
+    stack_simple = []  # type: List[Tuple[str, str, List[str]]]
+
+    # The stack of logical frames full_0 ... full_(n-1) (or full_n),
+    # each with onto, upstream, branch, and a list of remaining child
+    # branches.
+    stack_full = []  # type: List[Tuple[str, str, str, List[str]]]
 
     @staticmethod
     def create_initial(opts, graph):
@@ -212,6 +213,7 @@ class RebaseManyMachine(object):
         self.current_rebase = None
         self.stack_simple = []
         self.stack_full = [(graph.orig_upstream,
+                            graph.orig_upstream,
                             graph.orig_branch,
                             child_branches(graph.orig_branch))]
         return self
@@ -257,42 +259,49 @@ class RebaseManyMachine(object):
 
             if self.current_rebase is not None:
                 # Variant 0.  Top of a `simple` call, at the rebase.
-                upstream, branch = self.current_rebase
+                onto, upstream, branch = self.current_rebase
 
                 # Attempt rebase.
+                # TODO nicer output for `upstream` here
                 self.opts.v_out('Rebasing: %s <- %s' % (upstream, branch))
+                old_id = git_rev_parse(branch)
                 if not self.opts.dry_run:
                     self.write_stack()
                     self.write_rebase_log(branch)
-                    one_rebase(upstream, branch)
+                    with file(self.opts.state_filename('rebase-oldid'), 'w') as f:
+                        f.write('%s\n' % (old_id,))
+                    one_rebase(onto, upstream, branch)
 
                 # If we made it here, proceed to the loop.
+                new_id = git_rev_parse(branch)
                 self.current_rebase = None
-                self.stack_simple.append((branch, child_branches(branch)))
+                self.stack_simple.append((new_id, old_id, child_branches(branch)))
 
             elif self.stack_simple:
                 # Variant 1.  Top of the `simple` loop.
-                branch, children = self.stack_simple[-1]
+                new_id, old_id, children = self.stack_simple[-1]
                 if children:
                     # Loop in `rebase_many_simple` not done yet.  Recurse.
                     child = children.pop()
-                    self.current_rebase = (branch, child)
+                    self.current_rebase = (new_id, old_id, child)
                 else:
                     # Loop in `rebase_many_simple` done; frame returns.
                     self.stack_simple.pop()
 
             elif self.stack_full:
                 # Variant 2.  Top of the `full` loop.
-                upstream, branch, children = self.stack_full[-1]
+                onto, upstream, branch, children = self.stack_full[-1]
                 if children:
                     # Loop not done yet.  Recurse.
                     child = children.pop()
-                    self.stack_full.append((branch, child, child_branches(child)))
+                    self.stack_full.append((branch, branch, child,
+                                            child_branches(child)))
                 else:
                     # Loop done.
-                    if not is_atop(upstream, branch):
+                    if not is_atop(onto, branch) or onto != upstream:
+                        # Enter a `simple` frame; Variant 0.
                         self.stack_full.pop()
-                        self.current_rebase = (upstream, branch)
+                        self.current_rebase = (onto, upstream, branch)
                     else:
                         # Whole frame done.
                         self.stack_full.pop()
@@ -319,9 +328,11 @@ class RebaseManyMachine(object):
 
         # If that worked, proceed to the loop with a Variant 1 stack,
         # just like in run().
-        upstream, branch = self.current_rebase
+        onto, upstream, branch = self.current_rebase
+        old_id = self.opts.read_state_file('rebase-oldid')
+        new_id = git_rev_parse(branch)
         self.current_rebase = None
-        self.stack_simple.append((branch, child_branches(branch)))
+        self.stack_simple.append((new_id, old_id, child_branches(branch)))
         self.run()
 
 
