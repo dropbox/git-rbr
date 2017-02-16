@@ -93,10 +93,36 @@ class Options(object):
         with file(self.state_filename(name)) as f:
             return f.read().strip()
 
+    def try_read_state_file(self, name):
+        # type: (str) -> Optional[str]
+        '''Read the given file, or return None if missing.'''
+        try:
+            return self.read_state_file(name)
+        except IOError:
+            return None
+
     def v_out(self, message):
         # type: (str) -> None
         if self.verbose:
             sys.stderr.write(message + '\n')
+
+
+class RebaseGraph(object):
+    opts = None  # type: Options
+
+    orig_branch = None  # type: str
+    orig_upstream = None  # type: str
+
+    def __init__(self, opts):
+        # type: Options -> None
+        self.opts = opts
+        self.orig_branch = self.opts.read_state_file('branch')
+        self.orig_upstream = self.opts.read_state_file('upstream')
+
+    def return_to_original_branch(self):
+        # type: () -> None
+        cmd_output(
+            ['git', 'checkout', '--quiet', self.orig_branch])
 
 
 # Logically what we're doing here is
@@ -140,9 +166,7 @@ class Options(object):
 #
 class RebaseManyMachine(object):
     opts = None  # type: Options
-
-    orig_branch = None  # type: str
-    orig_upstream = None  # type: str
+    graph = None  # type: RebaseGraph
 
     # The logical stack (see above) is represented by current_rebase,
     # stack_simple, and stack_full.  Three variants:
@@ -173,19 +197,34 @@ class RebaseManyMachine(object):
     # branches.
     stack_simple = []  # type: List[Tuple[str, List[str]]]
 
-    def __init__(self, opts):
-        # type: (Options) -> None
+    @staticmethod
+    def create_initial(opts, graph):
+        # type: (Options, RebaseGraph) -> RebaseManyMachine
+        self = RebaseManyMachine()
         self.opts = opts
-        self.orig_branch = self.opts.read_state_file('branch')
-        self.orig_upstream = self.opts.read_state_file('upstream')
+        self.graph = graph
 
-    def read_stack(self):
-        # type: (str) -> None
+        # Stack variant 2.
+        self.current_rebase = None
+        self.stack_simple = []
+        self.stack_full = [(graph.orig_upstream,
+                            graph.orig_branch,
+                            child_branches(graph.orig_branch))]
+        return self
+
+    @staticmethod
+    def create_resume(opts, graph):
+        # type: (Options, RebaseGraph) -> RebaseManyMachine
+        self = RebaseManyMachine()
+        self.opts = opts
+        self.graph = graph
+
         with file(self.opts.state_filename('stack')) as f:
             stack_data = json.load(f)
-        self.stack_full = stack_data['stack_full']
-        self.stack_simple = stack_data['stack_simple']
         self.current_rebase = stack_data['current_rebase']
+        self.stack_simple = stack_data['stack_simple']
+        self.stack_full = stack_data['stack_full']
+        return self
 
     def write_stack(self):
         # type: () -> None
@@ -205,25 +244,6 @@ class RebaseManyMachine(object):
             ['git', 'rev-parse', '--verify', branch]).strip()
         with file(self.opts.state_filename('rebase-log'), 'a') as f:
             f.write('%s %s\n' % (ref, current_commit_id))
-
-    def return_to_original_branch(self):
-        # type: () -> None
-        cmd_output(
-            ['git', 'checkout', '--quiet', self.orig_branch])
-
-    def reset_all(self):
-        # type: () -> None
-        try:
-            log = self.opts.read_state_file('rebase-log')
-        except IOError:
-            return
-
-        for line in reversed(log.split('\n')):
-            ref, commit_id = line.rsplit(' ', 1)
-            self.opts.v_out('Resetting: %s %s' % (ref, commit_id))
-            cmd_output(
-                ['git', 'update-ref', '-m', 'rebase-many: aborting', ref, commit_id])
-        self.return_to_original_branch()
 
     def run(self):
         # type: () -> None
@@ -277,26 +297,16 @@ class RebaseManyMachine(object):
                 # Like Variant 2, but our whole outermost frame is done.
                 break
 
-        self.return_to_original_branch()
-
-    def init_stack(self):
-        # type: () -> None
-        # Stack variant 2.
-        self.current_rebase = None
-        self.stack_simple = []
-        self.stack_full = [
-            (self.orig_upstream, self.orig_branch, child_branches(self.orig_branch))]
+        self.graph.return_to_original_branch()
 
     def start(self):
         # type: () -> None
-        self.init_stack()
         self.run()
 
     def resume(self, cmd):
         # type: (str) -> None
         assert cmd in ('continue', 'skip')
 
-        self.read_stack()
         assert self.current_rebase  # TODO better error message
         # Variant 0 stack.
 
@@ -310,19 +320,22 @@ class RebaseManyMachine(object):
         self.stack_simple.append((branch, child_branches(branch)))
         self.run()
 
-    def abort_rebase(self):
-        '''Abort the actual `git rebase`, if we seem to be in one.'''
-        try:
-            self.read_stack()
-        except IOError:
-            return
-        if self.current_rebase:
-            cmd_output(['git', 'rebase', '--abort'])
 
-    def abort(self):
-        # type: () -> None
-        self.abort_rebase()
-        self.reset_all()
+def abort(opts, graph):
+    # type: (Options, RebaseGraph) -> None
+    stack_data = opts.try_read_state_file('stack') or '{}'
+    if json.loads(stack_data).get('current_rebase'):
+        opts.v_out('git rebase --abort')
+        cmd_output(['git', 'rebase', '--abort'])
+
+    log = opts.try_read_state_file('rebase-log')
+    for line in reversed(log.split('\n')) if log else []:
+        ref, commit_id = line.rsplit(' ', 1)
+        opts.v_out('Resetting: %s %s' % (ref, commit_id))
+        cmd_output(
+            ['git', 'update-ref', '-m', 'rebase-many: aborting', ref, commit_id])
+
+    graph.return_to_original_branch()
 
 
 def main():
@@ -332,13 +345,16 @@ def main():
 
     opts = Options(os.environ['GIT_DIR'])
 
-    machine = RebaseManyMachine(opts)
+    graph = RebaseGraph(opts)
+
     if cmd == 'init':
+        machine = RebaseManyMachine.create_initial(opts, graph)
         machine.start()
     elif cmd in ('continue', 'skip'):
+        machine = RebaseManyMachine.create_resume(opts, graph)
         machine.resume(cmd)
     elif cmd == 'abort':
-        machine.abort()
+        abort(opts, graph)
     else:
         exit_usage()
 
