@@ -55,7 +55,7 @@ class Options(object):
 
     def __init__(self, git_dir):
         # type: (str) -> None
-        self.state_dir = os.path.join(git_dir, 'rebase-many')
+        self.state_dir = os.path.join(git_dir, 'rebase-recursive')
 
         self.verbose = bool(self.read_state_file('verbose'))
         self.dry_run = bool(self.read_state_file('dry-run'))
@@ -108,7 +108,7 @@ def munge_resolve_message(text):
     '''If the `git rebase` how-to-resolve message appears in `text`, correct it.'''
     return re.sub(
         '(?<=")git rebase(?= --(?:continue|skip|abort)")',
-        'git rb',
+        'git rbr',
         text)
 
 
@@ -135,17 +135,17 @@ def one_rebase(onto, upstream, branch):
 
 # Logically what we're doing here is
 #
-#   def rebase_many_simple(onto, upstream, branch):
+#   def rbr_simple(onto, upstream, branch):
 #       old_id = git_rev_parse(branch)
 #       git_rebase_onto(onto, upstream, branch)
 #       for child in child_branches(branch):
-#           rebase_many_simple(branch, old_id, child)
+#           rbr_simple(branch, old_id, child)
 #
-#   def rebase_many_full(onto, upstream, branch):
+#   def rbr_full(onto, upstream, branch):
 #       for child in child_branches(branch):
-#           rebase_many_full(branch, branch, child)
+#           rbr_full(branch, branch, child)
 #       if not is_atop(upstream, branch) or onto != upstream:
-#           rebase_many_simple(onto, upstream, branch)
+#           rbr_simple(onto, upstream, branch)
 #
 # It gets more complicated than that in order to support --continue
 # and friends.  Effectively we maintain the stack of recursive calls
@@ -159,16 +159,16 @@ def one_rebase(onto, upstream, branch):
 # to represent on disk consists of frames
 #    full_0 full_1 ... full_n simple_0 ... simple_m
 # where the innermost frame simple_m is at the rebase; the innermost
-# rebase_many_full frame full_n is at the rebase_many_simple call; and the
-# other frames are each at the recursion inside their respective loops.
+# rbr_full frame full_n is at the rbr_simple call; and the other frames
+# are each at the recursion inside their respective loops.
 #
 # Internally, it's convenient to overload the stack data structures
 # slightly to represent two variant forms of stack:
-#   1. at the top of the `rebase_many_simple` loop, and
-#   2. at the top of the `rebase_many_full` loop.
+#   1. at the top of the `rbr_simple` loop, and
+#   2. at the top of the `rbr_full` loop.
 # These don't appear in stacks stored on disk.
 #
-class RebaseManyMachine(object):
+class RebaseRecursiveMachine(object):
     opts = None  # type: Options
     graph = None  # type: RebaseGraph
 
@@ -179,11 +179,11 @@ class RebaseManyMachine(object):
     #     current_rebase not None.
     #     simple_m described by current_rebase, full_n omitted as a tail call.
     #
-    #   Variant 1: top of `rebase_many_simple` loop.
+    #   Variant 1: top of `rbr_simple` loop.
     #     current_rebase None, stack_simple nonempty.
     #     simple_m included in stack_simple, full_n omitted as a tail call.
     #
-    #   Variant 2: top of `rebase_many_full` loop.
+    #   Variant 2: top of `rbr_full` loop.
     #     current_rebase None, stack_simple empty.
     #     full_n included in stack_full.
 
@@ -203,8 +203,8 @@ class RebaseManyMachine(object):
 
     @staticmethod
     def create_initial(opts, graph):
-        # type: (Options, RebaseGraph) -> RebaseManyMachine
-        self = RebaseManyMachine()
+        # type: (Options, RebaseGraph) -> RebaseRecursiveMachine
+        self = RebaseRecursiveMachine()
         self.opts = opts
         self.graph = graph
 
@@ -219,8 +219,8 @@ class RebaseManyMachine(object):
 
     @staticmethod
     def create_resume(opts, graph):
-        # type: (Options, RebaseGraph) -> RebaseManyMachine
-        self = RebaseManyMachine()
+        # type: (Options, RebaseGraph) -> RebaseRecursiveMachine
+        self = RebaseRecursiveMachine()
         self.opts = opts
         self.graph = graph
 
@@ -257,7 +257,7 @@ class RebaseManyMachine(object):
             #    (self.current_rebase, self.stack_simple, self.stack_full)))
 
             if self.current_rebase is not None:
-                # Variant 0.  Top of a `simple` call, at the rebase.
+                # Variant 0.  Top of an `rbr_simple` call, at the rebase.
                 onto, upstream, branch = self.current_rebase
 
                 # Attempt rebase.
@@ -275,18 +275,18 @@ class RebaseManyMachine(object):
                 self.stack_simple.append((branch, old_id, child_branches(branch)))
 
             elif self.stack_simple:
-                # Variant 1.  Top of the `simple` loop.
+                # Variant 1.  Top of the `rbr_simple` loop.
                 branch, old_id, children = self.stack_simple[-1]
                 if children:
-                    # Loop in `rebase_many_simple` not done yet.  Recurse.
+                    # Loop in `rbr_simple` not done yet.  Recurse.
                     child = children.pop()
                     self.current_rebase = (branch, old_id, child)
                 else:
-                    # Loop in `rebase_many_simple` done; frame returns.
+                    # Loop in `rbr_simple` done; frame returns.
                     self.stack_simple.pop()
 
             elif self.stack_full:
-                # Variant 2.  Top of the `full` loop.
+                # Variant 2.  Top of the `rbr_full` loop.
                 onto, upstream, branch, children = self.stack_full[-1]
                 if children:
                     # Loop not done yet.  Recurse.
@@ -296,7 +296,7 @@ class RebaseManyMachine(object):
                 else:
                     # Loop done.
                     if not is_atop(onto, branch) or onto != upstream:
-                        # Enter a `simple` frame; Variant 0.
+                        # Enter an `rbr_simple` frame; Variant 0.
                         self.stack_full.pop()
                         self.current_rebase = (onto, upstream, branch)
                     else:
@@ -344,7 +344,7 @@ def abort(opts, graph):
         ref, commit_id = line.rsplit(' ', 1)
         opts.v_out('Resetting: %s %s' % (ref, commit_id))
         cmd_output(
-            ['git', 'update-ref', '-m', 'rebase-many: aborting', ref, commit_id])
+            ['git', 'update-ref', '-m', 'rebase-recursive: aborting', ref, commit_id])
 
     graph.return_to_original_branch()
 
@@ -359,10 +359,10 @@ def main():
     graph = RebaseGraph(opts)
 
     if cmd == 'init':
-        machine = RebaseManyMachine.create_initial(opts, graph)
+        machine = RebaseRecursiveMachine.create_initial(opts, graph)
         machine.start()
     elif cmd in ('continue', 'skip'):
-        machine = RebaseManyMachine.create_resume(opts, graph)
+        machine = RebaseRecursiveMachine.create_resume(opts, graph)
         machine.resume(cmd)
     elif cmd == 'abort':
         abort(opts, graph)

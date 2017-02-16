@@ -4,10 +4,12 @@ SUBDIRECTORY_OK=Yes
 OPTIONS_KEEPDASHDASH=
 OPTIONS_STUCKLONG=t
 OPTIONS_SPEC="\
-git rb [options]
-git rb --continue | --abort | --skip
+git rbr [options]
+git rbr --continue | --abort | --skip
 
-Rebase this branch and all its dependents onto their respective upstreams.
+Rebase, recursively, this branch and all its dependents.
+
+Each branch is rebased on top of its own respective upstream.
 --
  Available options are
 v,verbose!         print more information
@@ -22,7 +24,7 @@ skip!              do \`git rebase --skip\` and continue
 require_work_tree_exists
 cd_to_toplevel
 
-state_dir="$GIT_DIR"/rebase-many
+state_dir="$GIT_DIR"/rebase-recursive
 
 #
 # Parse args
@@ -62,17 +64,17 @@ then
 	in_progress=t
 fi
 
-# TODO detect non-many rebase too
+# TODO detect non-recursive rebase too
 
 if test -n "$action" && test -z "$in_progress"
 then
-	die "No rebase-many in progress?"
+	die "No recursive rebase ('git rbr') in progress?"
 fi
 
 if test -z "$action" && test -n "$in_progress"
 then
 	die "\
-Rebase-many in progress; try abort/continue, or wipe the state dir.
+Recursive rebase ('git rbr') in progress; try abort/continue, or wipe the state dir.
 
 TODO better message."
 fi
@@ -98,7 +100,7 @@ cleanup_state () {
 }
 
 run_core () {
-	GIT_DIR="$GIT_DIR" git rb-core "$1"
+	GIT_DIR="$GIT_DIR" git rbr-core "$1"
 	core_status=$?
 	if test "$core_status" -ne 0
 	then
@@ -130,7 +132,7 @@ esac
 # Handle initial case
 #
 
-require_clean_work_tree "rebase-many" "$(gettext "Please commit or stash them.")"
+require_clean_work_tree "rebase-recursive" "$(gettext "Please commit or stash them.")"
 
 head_ref=$(git symbolic-ref -q HEAD)
 if test -z "$head_ref"
