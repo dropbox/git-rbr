@@ -14,6 +14,7 @@ Each branch is rebased on top of its own respective upstream.
  Available options are
 v,verbose!         print more information
 dry-run!           only simulate, don't actually rebase
+orphan!            force proceed even if some branches will be left behind
  Actions:
 continue!          continue
 abort!             abort
@@ -31,8 +32,9 @@ state_dir="$GIT_DIR"/rebase-recursive
 #
 
 action=
-dry_run=
 verbose=
+dry_run=
+orphan=
 
 total_argc=$#
 while test $# != 0
@@ -42,12 +44,15 @@ do
 		test $total_argc -eq 2 || usage
 		action=${1#--}
 		;;
-	--dry-run)
-		dry_run=t
-		;;
 	--verbose)
 		verbose=t
 		GIT_QUIET=
+		;;
+	--dry-run)
+		dry_run=t
+		;;
+	--orphan)
+		orphan=t
 		;;
 	--)
 		shift
@@ -116,6 +121,7 @@ write_basic_state () {
 	echo "$(get_upstream "$branch")" > "$state_dir"/upstream
 	echo "$verbose" > "$state_dir"/verbose
 	echo "$dry_run" > "$state_dir"/dry-run
+	echo "$orphan" > "$state_dir"/orphan
 }
 
 cleanup_state () {

@@ -1,5 +1,6 @@
 #!/usr/bin/python
 
+from collections import defaultdict
 import json
 import os
 import os.path
@@ -52,6 +53,7 @@ class Options(object):
 
     verbose = False
     dry_run = False
+    orphan = False
 
     def __init__(self, git_dir):
         # type: (str) -> None
@@ -59,6 +61,7 @@ class Options(object):
 
         self.verbose = bool(self.read_state_file('verbose'))
         self.dry_run = bool(self.read_state_file('dry-run'))
+        self.orphan = bool(self.read_state_file('orphan'))
 
     def state_filename(self, basename):
         # type: (str) -> str
@@ -100,8 +103,115 @@ class RebaseGraph(object):
         cmd_output(
             ['git', 'checkout', '--quiet', '--force', self.orig_branch])
 
-    # TODO check for branches that are based on this one but don't have
-    # upstream set, and the like.
+    # TODO this function's code is a bit messy.
+    # TODO store the resulting graph so we don't have to re-look things up later.
+    def check_graph(self):
+        # type: () -> bool
+        '''True just if the check passes.'''
+        if self.opts.orphan:
+            return
+
+        try:
+            subprocess.check_output(['git', 'for-each-ref', '--count=1',
+                                     '--contains=HEAD'])
+        except subprocess.CalledProcessError:
+            sys.stderr.write('''\
+Warning: You appear to have an ancient Git version that leaves us unable
+to check whether some branches on top of this one lack "upstream" pointers
+and will be left behind atop the old version of the commits we rewrite.
+
+Please install a recent version of Git (v2.4.3, which is from June 2015,
+or later) and retry.
+
+Alternatively, pass '--orphan' to 'git rbr' to skip this check -- perhaps
+after confirming with 'git branch -vv' that you have set all branch's
+upstreams as intended!
+''')
+            return False
+
+        orig_ref = cmd_output(
+            ['git', 'rev-parse', '--symbolic-full-name', self.orig_branch]).strip()
+
+        this_branch_commits = cmd_output(
+            ['git', 'rev-list', self.orig_branch, '--not', self.orig_upstream, '--']
+        ).strip().split('\n')
+
+        containing_refs_data = cmd_output(
+            ['git', 'for-each-ref', '--format', '%(refname) %(upstream)']
+            + ['--contains=' + commit for commit in this_branch_commits]
+        )
+
+        head_prefix = 'refs/heads/'
+        containing_refs = set()
+        non_heads = set()
+        upstreams = {}
+        children = defaultdict(list)
+        for line in containing_refs_data.rstrip('\n').split('\n'):
+            ref, upstream = line.split(' ')
+            containing_refs.add(ref)
+            if not ref.startswith(head_prefix):
+                non_heads.add(ref)
+                continue
+            #branch = ref[len(head_prefix):]
+            if upstream:
+                upstreams[ref] = upstream
+                children[upstream].append(ref)
+
+        maybe_good_refs = containing_refs - non_heads
+
+        missing_upstream = set(
+            ref for ref in maybe_good_refs if ref not in upstreams)
+        maybe_good_refs -= missing_upstream
+
+        wild_upstream = set(ref for ref in maybe_good_refs
+                            if ref != orig_ref
+                               and upstreams[ref] not in containing_refs)
+        maybe_good_refs -= wild_upstream
+
+        cycles = set()
+        fingers = set(maybe_good_refs)
+        while fingers:
+            new_fingers = set(upstreams[ref] for ref in fingers
+                              if upstreams[ref] in maybe_good_refs)
+            if new_fingers == fingers:
+                cycles = fingers
+                break
+            fingers = new_fingers
+
+        if non_heads or missing_upstream or wild_upstream or cycles:
+            message = '''\
+Warning: Some refs based on branch '%s' are not its descendants in the
+Git "upstream" metadata!  This means that a recursive rebase won't touch them,
+and will leave them behind atop the old version of the commits we rewrite.
+
+Specifically:\
+''' % (self.orig_branch,)
+            if non_heads:
+                message += '\n  These refs are not branches:\n'
+                message += ''.join('    %s\n' % (ref,) for ref in non_heads)
+            if missing_upstream:
+                message += '\n  These branches have no upstream set:\n'
+                message += ''.join('    %s\n' % (ref[len(head_prefix):],)
+                                   for ref in missing_upstream)
+            if wild_upstream:
+                # TODO Really just follow the actual upstream-graph.
+                message += '\n  These branches have an upstream pointing outside the relevant branches:\n'
+                message += ''.join('    %s -> %s\n'
+                                   % (ref[len(head_prefix):], upstreams[ref])
+                                   for ref in wild_upstream)
+            if cycles:
+                message += '\n  These branches are in a cycle (!) of upstreams:\n'
+                message += ''.join('    %s\n' % (ref[len(head_prefix):],)
+                                   for ref in cycles)
+            message += '''
+Fix with 'git branch -u' aka '--set-upstream-to', and examine the situation
+with 'git branch -vv'.
+
+Or to proceed anyway, pass '--orphan' to 'git rbr' to skip this check.
+
+'''
+            sys.stderr.write(message)
+            return False
 
 
 def munge_resolve_message(text):
@@ -359,6 +469,8 @@ def main():
     graph = RebaseGraph(opts)
 
     if cmd == 'init':
+        if not graph.check_graph():
+            sys.exit(0)  # TODO really should be an error; but wrapper must clean up
         machine = RebaseRecursiveMachine.create_initial(opts, graph)
         machine.start()
     elif cmd in ('continue', 'skip'):
