@@ -138,9 +138,8 @@ def one_rebase(onto, upstream, branch):
 #   def rebase_many_simple(onto, upstream, branch):
 #       old_id = git_rev_parse(branch)
 #       git_rebase_onto(onto, upstream, branch)
-#       new_id = git_rev_parse(branch)
 #       for child in child_branches(branch):
-#           rebase_many_simple(new, old, child)
+#           rebase_many_simple(branch, old_id, child)
 #
 #   def rebase_many_full(onto, upstream, branch):
 #       for child in child_branches(branch):
@@ -193,7 +192,7 @@ class RebaseManyMachine(object):
     current_rebase = None  # type: Optional[Tuple[str, str, str]]
 
     # The stack of logical frames simple_0 ... simple_(m-1) (or
-    # simple_m), each with new_id, old_id, and a list of remaining child
+    # simple_m), each with branch, old_id, and a list of remaining child
     # branches.
     stack_simple = []  # type: List[Tuple[str, str, List[str]]]
 
@@ -262,8 +261,7 @@ class RebaseManyMachine(object):
                 onto, upstream, branch = self.current_rebase
 
                 # Attempt rebase.
-                # TODO nicer output for `upstream` here
-                self.opts.v_out('Rebasing: %s <- %s' % (upstream, branch))
+                self.opts.v_out('Rebasing: %s <- %s' % (onto, branch))
                 old_id = git_rev_parse(branch)
                 if not self.opts.dry_run:
                     self.write_stack()
@@ -273,17 +271,16 @@ class RebaseManyMachine(object):
                     one_rebase(onto, upstream, branch)
 
                 # If we made it here, proceed to the loop.
-                new_id = git_rev_parse(branch)
                 self.current_rebase = None
-                self.stack_simple.append((new_id, old_id, child_branches(branch)))
+                self.stack_simple.append((branch, old_id, child_branches(branch)))
 
             elif self.stack_simple:
                 # Variant 1.  Top of the `simple` loop.
-                new_id, old_id, children = self.stack_simple[-1]
+                branch, old_id, children = self.stack_simple[-1]
                 if children:
                     # Loop in `rebase_many_simple` not done yet.  Recurse.
                     child = children.pop()
-                    self.current_rebase = (new_id, old_id, child)
+                    self.current_rebase = (branch, old_id, child)
                 else:
                     # Loop in `rebase_many_simple` done; frame returns.
                     self.stack_simple.pop()
@@ -330,9 +327,8 @@ class RebaseManyMachine(object):
         # just like in run().
         onto, upstream, branch = self.current_rebase
         old_id = self.opts.read_state_file('rebase-oldid')
-        new_id = git_rev_parse(branch)
         self.current_rebase = None
-        self.stack_simple.append((new_id, old_id, child_branches(branch)))
+        self.stack_simple.append((branch, old_id, child_branches(branch)))
         self.run()
 
 
