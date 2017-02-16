@@ -64,19 +64,42 @@ then
 	in_progress=t
 fi
 
-# TODO detect non-recursive rebase too
+if test -z "$in_progress" &&
+	{ test -d "$GIT_DIR"/rebase-apply || test -d "$GIT_DIR"/rebase-merge; }
+then
+	die "\
+A non-recursive rebase ('git rebase') is already in progress,
+without a recursive rebase ('git rbr').
+
+Finish or abort that one first.
+"
+fi
 
 if test -n "$action" && test -z "$in_progress"
 then
-	die "No recursive rebase ('git rbr') in progress?"
+	coda="
+Try starting a new one?
+"
+	test "$action" = "abort" && coda=
+	die "\
+No recursive rebase ('git rbr') is in progress -- nothing to $action.
+$coda"
 fi
 
 if test -z "$action" && test -n "$in_progress"
 then
+	state_dir_shortname=.git/${state_dir##*/}/
 	die "\
-Recursive rebase ('git rbr') in progress; try abort/continue, or wipe the state dir.
+There's already a '$state_dir_shortname' directory; it looks like
+a recursive rebase ('git rbr') is already in progress.  Try
+	git rebase (--continue | --skip | --abort)
+to proceed with that or to abort it.
 
-TODO better message."
+Alternatively, you can remove the '$state_dir_shortname' directory
+to wipe the recursive-rebase state, and start 'git rbr' over.
+But if you need to do that, it's probably a bug and please report it;
+first try 'git rebase --abort' (or '--continue', etc.) instead.
+"
 fi
 
 #
