@@ -109,7 +109,7 @@ class RebaseGraph(object):
         # type: () -> bool
         '''True just if the check passes.'''
         if self.opts.orphan:
-            return
+            return True
 
         try:
             subprocess.check_output(['git', 'for-each-ref', '--count=1',
@@ -212,6 +212,8 @@ Or to proceed anyway, pass '--orphan' to 'git rbr' to skip this check.
 '''
             sys.stderr.write(message)
             return False
+
+        return True
 
 
 def munge_resolve_message(text):
