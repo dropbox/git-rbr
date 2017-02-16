@@ -34,7 +34,7 @@ def child_branches(branch):
     config_name_text = unchecked_output(
         ['git', 'config', '--name-only',
          '--get-regexp', r'branch\..*\.merge',
-         'refs/heads/%s' % (branch,)])
+         '^refs/heads/%s$' % (re.escape(branch),)])
     return re.findall('^branch\.(.*)\.merge$', config_name_text, re.M)
 
 
@@ -45,30 +45,6 @@ def is_atop(upstream, branch):
         ['git', 'rev-list', '--count', '--max-count=1',
          upstream, '--not', branch,
          '--']).strip()
-
-
-def munge_resolve_message(text):
-    '''If the `git rebase` how-to-resolve message appears in `text`, correct it.'''
-    return re.sub(
-        '(?<=")git rebase(?= --(?:continue|skip|abort)")',
-        'git rb',
-        text)
-
-
-def one_rebase(upstream, branch):
-    # More complex than `cmd_output`, in order to munge the merge-conflict
-    # instructions.  Which go to stdout in a plain (`type=am`) or
-    # `type=merge` rebase, but to stderr in a `type=interactive` rebase,
-    # so cover both.
-    proc = subprocess.Popen(
-        ['git', 'rebase', upstream, branch],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    out, err = proc.communicate()
-    retcode = proc.poll()
-    if retcode:
-        sys.stdout.write(munge_resolve_message(out))
-        sys.stderr.write(munge_resolve_message(err))
-        sys.exit(retcode)
 
 
 class Options(object):
@@ -122,7 +98,35 @@ class RebaseGraph(object):
     def return_to_original_branch(self):
         # type: () -> None
         cmd_output(
-            ['git', 'checkout', '--quiet', self.orig_branch])
+            ['git', 'checkout', '--quiet', '--force', self.orig_branch])
+
+    # TODO check for branches that are based on this one but don't have
+    # upstream set, and the like.
+
+
+def munge_resolve_message(text):
+    '''If the `git rebase` how-to-resolve message appears in `text`, correct it.'''
+    return re.sub(
+        '(?<=")git rebase(?= --(?:continue|skip|abort)")',
+        'git rb',
+        text)
+
+
+def one_rebase(upstream, branch):
+    # type: (str, str) -> None
+    # More complex than `cmd_output`, in order to munge the merge-conflict
+    # instructions.  Which go to stdout in a plain (`type=am`) or
+    # `type=merge` rebase, but to stderr in a `type=interactive` rebase,
+    # so cover both.
+    proc = subprocess.Popen(
+        ['git', 'rebase', upstream, branch],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    out, err = proc.communicate()
+    retcode = proc.poll()
+    if retcode:
+        sys.stdout.write(munge_resolve_message(out))
+        sys.stderr.write(munge_resolve_message(err))
+        sys.exit(retcode)
 
 
 # Logically what we're doing here is
@@ -326,7 +330,7 @@ def abort(opts, graph):
     stack_data = opts.try_read_state_file('stack') or '{}'
     if json.loads(stack_data).get('current_rebase'):
         opts.v_out('git rebase --abort')
-        cmd_output(['git', 'rebase', '--abort'])
+        unchecked_output(['git', 'rebase', '--abort'])
 
     log = opts.try_read_state_file('rebase-log')
     for line in reversed(log.split('\n')) if log else []:
