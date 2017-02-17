@@ -13,7 +13,7 @@ import tempfile
 @pytest.fixture
 def repo():
     # type: () -> str
-    d = tempfile.mkdtemp()
+    d = tempfile.mkdtemp(prefix='tmp.test-git-rbr.')
     git_dir = os.environ.get('GIT_DIR')
     os.environ['GIT_DIR'] = os.path.join(d, '.git')
     cwd = os.getcwd()
@@ -72,9 +72,16 @@ testci () {
     shell(preamble + cmds)
 
 
-def subjects_between(upstream, branch):
+def range_subjects(revrange):
+    # type: (str) -> None
     return check_output(['git', 'log', '--pretty=format:%s', '--reverse',
-                         '%s..%s' % (upstream, branch)]).strip('\n').split('\n')
+                         revrange]).strip('\n').split('\n')
+    # '%s..%s' % (upstream, branch)
+
+
+def assert_range_subjects(revrange, subjects):
+    # type: (str, str) -> None
+    assert ' '.join(range_subjects(revrange)) == subjects
 
 
 def assert_atop(upstream, branch):
@@ -83,16 +90,35 @@ def assert_atop(upstream, branch):
          upstream, '--not', branch, '--']).strip()
 
 
+def all_branches():
+    # type: () -> Set[str]
+    return set(check_output(
+        ['git', 'for-each-ref', '--format=%(refname:short)', 'refs/heads/']
+    ).strip().split('\n'))
+
+
 def assert_updated(branches=None):
     '''Assert each branch is atop its upstream.  If None, all branches but master.'''
     if branches is None:
-        all_branches = set(check_output(
-            ['git', 'for-each-ref', '--format=%(refname:short)', 'refs/heads/']
-        ).strip().split('\n'))
-        branches = all_branches - set(['master'])
+        branches = all_branches() - set(['master'])
 
     for branch in branches:
         assert_atop(branch+'@{u}', branch)
+
+
+def branch_values(branches=None):
+    # type: (Optional[List[str]]) -> Dict[str, str]
+    '''Returns the commit ID of each branch.  If None, all branches.'''
+    data = check_output(['git', 'for-each-ref',
+                         '--format=%(refname:short) %(objectname)', 'refs/heads/'])
+    all_values = {
+        branch: value
+        for line in data.strip('\n').split('\n')
+        for branch, value in (line.split(' '),)
+    }
+    if branches is None:
+        return all_values
+    return {branch: all_values[branch] for branch in branches}
 
 
 def test_simple(repo):
@@ -115,7 +141,7 @@ git checkout a
 ''')
     check_call(['git', 'rbr', '-v'])
     assert_updated()
-    assert ' '.join(subjects_between('master^', 'c')) == 'master2 a a2 b b2 c'
+    assert_range_subjects('master^..c', 'master2 a a2 b b2 c')
 
 
 def test_fork(repo):
@@ -167,7 +193,7 @@ def test_continue(repo_conflicted):
     check_call(['git', 'add', '-u'])
     check_call(['git', 'rbr', '--continue'])
     assert_updated()
-    assert ' '.join(subjects_between('master^', 'c')) == 'master2 a aa b ab c'
+    assert_range_subjects('master^..c', 'master2 a aa b ab c')
 
 
 def test_skip(repo_conflicted):
@@ -175,9 +201,12 @@ def test_skip(repo_conflicted):
     expect_conflict(['git', 'rbr', '-v'])
     check_call(['git', 'rbr', '--skip'])
     assert_updated()
-    assert ' '.join(subjects_between('master^', 'c')) == 'master2 a aa b c'
+    assert_range_subjects('master^..c', 'master2 a aa b c')
 
 
 def test_abort(repo_conflicted):
     setup_shell('git checkout a')
-    # TODO WORK HERE
+    before = branch_values()
+    expect_conflict(['git', 'rbr', '-v'])
+    check_call(['git', 'rbr', '--abort'])
+    assert before == branch_values()
