@@ -20,7 +20,6 @@ def repo():
     os.chdir(d)
     check_call(['git', 'init', d])
 
-    print d
     return d
 
     # Pytest 2.6.1 which I have handy doesn't support this.  Forget it for now.
@@ -72,22 +71,30 @@ testci () {
     shell(preamble + cmds)
 
 
+def describe_for_error(commitish):
+    return check_output(
+        ['git', 'log', '-n1', '--pretty=format:%h \'%s\'%d', commitish])
+
+
+def show_for_error(revlist_args):
+    return check_output(
+        ['git', 'log', '--oneline', '--graph', '--decorate', '--boundary']
+        + revlist_args)
+
+
+def show_repo_for_error():
+    return show_for_error(['--all', 'HEAD'])
+
+
+def show_range_for_error(revrange):
+    return show_for_error([revrange])
+
+
 def range_subjects(revrange):
     # type: (str) -> None
     return check_output(['git', 'log', '--pretty=format:%s', '--reverse',
                          revrange]).strip('\n').split('\n')
     # '%s..%s' % (upstream, branch)
-
-
-def assert_range_subjects(revrange, subjects):
-    # type: (str, str) -> None
-    assert ' '.join(range_subjects(revrange)) == subjects
-
-
-def assert_atop(upstream, branch):
-    assert '0' == check_output(
-        ['git', 'rev-list', '--count', '--max-count=1',
-         upstream, '--not', branch, '--']).strip()
 
 
 def all_branches():
@@ -97,6 +104,25 @@ def all_branches():
     ).strip().split('\n'))
 
 
+class RepoError(RuntimeError):
+    def __init__(self, msg):        
+        super(RepoError, self).__init__(
+            msg.rstrip('\n') + '\n' + show_repo_for_error()
+        )
+
+
+def assert_range_subjects(revrange, subjects):
+    # type: (str, str) -> None
+    assert ' '.join(range_subjects(revrange)) == subjects
+
+
+def assert_atop(upstream, branch):
+    if '0' != check_output(
+        ['git', 'rev-list', '--count', '--max-count=1',
+         upstream, '--not', branch, '--']).strip():
+        raise RepoError('Commit %s not atop %s:' % (branch, upstream,))
+
+
 def assert_updated(branches=None):
     '''Assert each branch is atop its upstream.  If None, all branches but master.'''
     if branches is None:
@@ -104,6 +130,25 @@ def assert_updated(branches=None):
 
     for branch in branches:
         assert_atop(branch+'@{u}', branch)
+
+
+def assert_linear(upstream, branch, subjects):
+    # type: (str, str, str) -> None
+    '''Assert upstream..branch is a linear history with the given subjects.
+
+    `subjects` is a space-separated list.
+    '''
+
+    revrange = '%s..%s' % (upstream, branch)
+    if any(len(line.split(' ')) != 2
+           for line in check_output(['git', 'log', '--pretty=format:%h %p',
+                                     revrange]).strip('\n').split('\n')):
+        raise RepoError('Range %s not linear: has merge commit:'
+                        % (revrange,))
+
+    assert_atop(upstream, branch)
+
+    assert_range_subjects(revrange, subjects)
 
 
 def branch_values(branches=None):
@@ -141,7 +186,7 @@ git checkout a
 ''')
     check_call(['git', 'rbr', '-v'])
     assert_updated()
-    assert_range_subjects('master^..c', 'master2 a a2 b b2 c')
+    assert_linear('master^', 'c', 'master2 a a2 b b2 c')
 
 
 def test_fork(repo):
@@ -163,11 +208,13 @@ testci a2
 ''')
     check_call(['git', 'rbr', '-v'])
     assert_updated()
+    assert_linear('master^', 'b', 'master2 a a2 b')
+    assert_linear('a^', 'c', 'a2 c')
 
 
 @pytest.fixture
 def repo_conflicted(repo):
-    # master -> a -> b -> ab -> c
+    # master <- a <- b <- ab <- c
     # master, a advanced
     # a, ab conflict
     setup_shell('''
@@ -193,7 +240,7 @@ def test_continue(repo_conflicted):
     check_call(['git', 'add', '-u'])
     check_call(['git', 'rbr', '--continue'])
     assert_updated()
-    assert_range_subjects('master^..c', 'master2 a aa b ab c')
+    assert_linear('master^', 'c', 'master2 a aa b ab c')
 
 
 def test_skip(repo_conflicted):
@@ -201,7 +248,7 @@ def test_skip(repo_conflicted):
     expect_conflict(['git', 'rbr', '-v'])
     check_call(['git', 'rbr', '--skip'])
     assert_updated()
-    assert_range_subjects('master^..c', 'master2 a aa b c')
+    assert_linear('master^', 'c', 'master2 a aa b c')
 
 
 def test_abort(repo_conflicted):
