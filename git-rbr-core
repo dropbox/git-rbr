@@ -472,7 +472,7 @@ def main():
 
     if cmd == 'init':
         if not graph.check_graph():
-            sys.exit(0)  # TODO really should be an error; but wrapper must clean up
+            sys.exit(2)
         machine = RebaseRecursiveMachine.create_initial(opts, graph)
         machine.start()
     elif cmd in ('continue', 'skip'):

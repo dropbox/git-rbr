@@ -131,11 +131,12 @@ cleanup_state () {
 run_core () {
 	GIT_DIR="$GIT_DIR" git rbr-core "$1"
 	core_status=$?
-	if test "$core_status" -ne 0
+	if test "$core_status" -eq 0 ||
+		test "$core_status" -eq 2  # special "error but clean up" status
 	then
-		exit "$core_status"
+		cleanup_state
 	fi
-	cleanup_state
+	exit "$core_status"
 }
 
 #

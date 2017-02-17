@@ -36,24 +36,29 @@ def repo():
 def shell(cmds):
     # type: (str) -> None
     try:
-        check_output(['sh', '-exc', cmds])
+        check_output(['sh', '-ec', cmds])
     except subprocess.CalledProcessError as e:
         cmds_fmtd = re.sub('^', '  ', cmds.strip('\n'), flags=re.M) + '\n'
         raise RuntimeError('Shell commands exited with code %s:\n%s'
                            % (e.returncode, cmds_fmtd))
 
 
-def expect_conflict(cmd):
-    # type: (str) -> None
-    '''Expect `cmd` to fail with a conflict message.'''
+def expect_error(desc, signature, cmd):
+    # type: (str, str, str) -> None
+    '''Expect `cmd` to fail with a matching message.'''
     try:
         out = check_output(cmd, stderr=subprocess.STDOUT)
         print out
-        raise RuntimeError('Expected conflict; none happened')
+        raise RuntimeError('Expected %s; none happened' % (desc,))
     except subprocess.CalledProcessError as e:
-        if 'git rbr --continue' not in e.output:
+        if signature not in e.output:
             print e.output
-            raise RuntimeError('Expected conflict; got different message')
+            raise RuntimeError('Expected %s; got different message' % (desc,))
+
+
+def expect_conflict(cmd):
+    # type: (str) -> None
+    expect_error('conflict', 'git rbr --continue', cmd)
 
 
 def setup_shell(cmds):
@@ -166,50 +171,57 @@ def branch_values(branches=None):
     return {branch: all_values[branch] for branch in branches}
 
 
-def test_simple(repo):
-    # master <- a <- b <- c, each advanced, no conflicts
+@pytest.fixture
+def repo_tree(repo):
+    # master <- a <- b <- c
+    #             <- d
+    # master, a, b advanced
+    # no conflicts
     setup_shell('''
 testci master
-git checkout -tb a
+git checkout -qtb a
 testci a
-git checkout -tb b
+git checkout -qtb b
 testci b
-git checkout -tb c
+git checkout -qtb c
 testci c
-git checkout master
+git checkout a -qtb d
+testci d
+git checkout -q master
 testci master2
-git checkout a
+git checkout -q a
 testci a2
-git checkout b
+git checkout -q b
 testci b2
-git checkout a
+git checkout -q a
 ''')
+
+
+def test_tree(repo_tree):
+    setup_shell('git checkout a')
     check_call(['git', 'rbr', '-v'])
     assert_updated()
     assert_linear('master^', 'c', 'master2 a a2 b b2 c')
+    assert_linear('a^', 'd', 'a2 d')
 
 
-def test_fork(repo):
-    # master <- a <- b
-    #             <- c
-    # each advanced, no conflicts
-    setup_shell('''
-testci master
-git checkout -tb a
-testci a
-git checkout -tb b
-testci b
-git checkout a -tb c
-testci c
-git checkout master
-testci master2
-git checkout a
-testci a2
-''')
+def test_safety_checks(repo_tree):
+    setup_shell('git checkout a')
+    setup_shell('git tag t b')
+    expect_error('non-branch error', 'are not branches', ['git', 'rbr', '-v'])
+    setup_shell('git tag -d t')
+
+    setup_shell('git branch b --unset-upstream')
+    expect_error('unset-upstream error', 'have no upstream set', ['git', 'rbr', '-v'])
+    setup_shell('git branch b -u master')
+    expect_error('wild-upstream error', 'upstream pointing outside',
+                 ['git', 'rbr', '-v'])
+    setup_shell('git branch b -u c')
+    expect_error('upstream-cycle error', 'are in a cycle', ['git', 'rbr', '-v'])
+    setup_shell('git branch b -u a')
+
     check_call(['git', 'rbr', '-v'])
     assert_updated()
-    assert_linear('master^', 'b', 'master2 a a2 b')
-    assert_linear('a^', 'c', 'a2 c')
 
 
 @pytest.fixture
@@ -219,17 +231,17 @@ def repo_conflicted(repo):
     # a, ab conflict
     setup_shell('''
 testci master
-git checkout -tb a
+git checkout -qtb a
 testci a
-git checkout -tb b
+git checkout -qtb b
 testci b
-git checkout -tb ab
+git checkout -qtb ab
 testci ab a
-git checkout -tb c
+git checkout -qtb c
 testci c
-git checkout master
+git checkout -q master
 testci master2
-git checkout a
+git checkout -q a
 testci aa a
 ''')
 
