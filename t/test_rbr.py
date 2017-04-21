@@ -20,6 +20,10 @@ def repo():
     os.chdir(d)
     check_call(['git', 'init', d])
 
+    this_dir = os.path.dirname(os.path.realpath(__file__))
+    rbr_root = os.path.dirname(this_dir)
+    os.environ['PATH'] = os.pathsep.join([rbr_root, os.environ['PATH']])
+
     return d
 
     # Pytest 2.6.1 which I have handy doesn't support this.  Forget it for now.
