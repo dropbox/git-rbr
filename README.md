@@ -1,5 +1,23 @@
 # git-rbr: "recursive rebase"
 
+## Running tests
+
+[![Build Status](https://travis-ci.org/dropbox/git-rbr.svg?branch=master)](https://travis-ci.org/dropbox/git-rbr)
+
+From the root of the repo, run
+
+    $ py.test
+
+Dependencies for the test suite:
+
+* **pytest**: `pip install pytest`
+
+* **Git v2.7 or later**: if your Git version is too old, install a
+  current one from https://git-scm.com/downloads or
+  https://launchpad.net/~git-core/+archive/ubuntu/ppa .
+  (`git-rbr` itself should work with much older versions of Git...
+  though we don't currently test that automatically.)
+
 ## License
 
 Copyright 2017 Dropbox, Inc.
