@@ -152,6 +152,7 @@ upstreams as intended!
             if not ref.startswith(head_prefix):
                 non_heads.add(ref)
                 continue
+            #branch = ref[len(head_prefix):]
             if upstream:
                 upstreams[ref] = upstream
                 children[upstream].append(ref)

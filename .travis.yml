@@ -1,0 +1,37 @@
+language: python
+python:
+ - "2.7"
+
+dist: trusty
+
+before_install:
+ #
+ # The tests use `git for-each-ref --contains`, which was new in
+ # Git 2.7 (commit 4a71109aa).  So we need something that new.
+ #
+ # The Travis `trusty` environment...
+ #  * is documented to have "A Git 2.x release":
+ #      https://docs.travis-ci.com/user/trusty-ci-environment ;
+ #  * though Trusty upstream has 1.9.1;
+ #  * empirically sometimes has 2.11.0:
+ #      https://travis-ci.org/dropbox/git-rbr/builds/224543377 ;
+ #  * but other times 1.9.1:
+ #      https://travis-ci.org/dropbox/git-rbr/builds/224544754 .
+ # (The difference is likely connected to the worker "version"
+ # of v2.7.0 vs v2.5.0.)
+ #
+ # So, install our own to be safe.  Maybe someday in the future
+ # we can take this out.
+ - sudo add-apt-repository -y ppa:git-core/ppa
+ - sudo apt-get -qq update
+ - sudo apt-get install -y git
+
+install:
+ # Bit of potentially-debugging output
+ - git --version
+ - git config -l
+ # Travis pre-installs pytest, but let's be explicit
+ - pip install pytest
+
+script:
+ - py.test
