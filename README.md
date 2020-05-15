@@ -1,5 +1,7 @@
 # git-rbr: "recursive rebase"
 
+**NOTE**: This repository is no longer maintained and may not be up-to-date.
+
 ## Running tests
 
 [![Build Status](https://travis-ci.org/dropbox/git-rbr.svg?branch=master)](https://travis-ci.org/dropbox/git-rbr)
